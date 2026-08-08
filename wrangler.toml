@@ -1,0 +1,13 @@
+name = "xpay"
+pages_build_output_dir = "dist"
+compatibility_date = "2026-08-01"
+compatibility_flags = ["nodejs_compat"]
+
+# Created via the dashboard (D1 SQL database > Create Database) or
+# `wrangler d1 create xpay-db`. Paste the resulting database_id below, or
+# just add the binding through Settings > Bindings in the Pages dashboard —
+# either approach works, they configure the same thing.
+[[d1_databases]]
+binding = "DB"
+database_name = "xpay-db"
+database_id = "REPLACE_WITH_YOUR_D1_DATABASE_ID"
