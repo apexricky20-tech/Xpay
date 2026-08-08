@@ -124,3 +124,4 @@ gradient itself is meant to read as the bridge between the two systems
 (indigo toward Deriv, cyan toward M-Pesa's cash-out side). Space Grotesk
 for display type, Inter for body, JetBrains Mono for account IDs and
 monetary figures. Full token set in `tailwind.config.js`.
+
