@@ -1,23 +1,35 @@
 # Xpay
 
 Instant transfers between M-Pesa and a Deriv trading account — a Vite/React
-frontend on Cloudflare Pages, with Cloudflare Pages Functions + D1 as the
-backend. Modeled on the AbePay onboarding flow: link Deriv → complete
-profile → set up mobile money → set a password → dashboard.
+frontend and a Hono-based Worker backend, both deployed as a single
+Cloudflare Worker with static assets. Modeled on the AbePay onboarding
+flow: link Deriv → complete profile → set up mobile money → set a
+password → dashboard.
 
 **Status:** every screen is built and wired together. The Deriv and M-Pesa
 integrations are mocked behind clean service modules so the whole flow is
 clickable today — see "Going live" below for what's left to connect real
 money movement.
 
+**A note on architecture:** this started out built against Cloudflare
+Pages Functions (a `/functions` folder with one file per route). It's
+since been rewritten to Cloudflare's native Workers-with-static-assets
+model (one Worker entry point in `worker/`, using Hono for routing) — this
+project's Cloudflare resource turned out to be a Workers service rather
+than a Pages project, and only the native model deploys cleanly against
+that. If you're following along from an earlier version of this repo,
+`functions/` is gone; `worker/` replaces it, with the same underlying
+logic.
+
 ## Stack
 
 - **Frontend:** Vite + React + TypeScript + Tailwind, client-side routing
   via `react-router-dom`.
-- **Backend:** Cloudflare Pages Functions (`/functions/api/**`), one file
-  per route, file-based routing.
+- **Backend:** a single Cloudflare Worker (`worker/index.ts`) using Hono
+  for routing — `/api/*` hits the Worker, everything else falls through to
+  the static build via the `ASSETS` binding.
 - **Database:** Cloudflare D1 (`schema.sql`) — users, sessions,
-  transactions.
+  transactions. Not bound yet — see "Going live."
 - **Auth:** Deriv OAuth to link an account, then a local email+password
   session (httpOnly cookie) for return visits, matching the flow in the
   reference screenshots.
@@ -27,32 +39,39 @@ money movement.
 ```
 npm install
 npm run dev          # frontend, http://localhost:5173
-npm run pages:dev     # in a second terminal — serves /api/* via wrangler
+npm run worker:dev    # in a second terminal — serves /api/* via wrangler, port 8787
 ```
 
-`vite.config.ts` proxies `/api` to the wrangler dev server (port 8788), so
-the frontend can call the real function handlers locally against a local
-D1 database (`wrangler d1 execute xpay-db --local --file=./schema.sql`
-before your first run).
+`vite.config.ts` proxies `/api` to the wrangler dev server, so the
+frontend can call the real Worker routes locally. For local D1, run
+`wrangler d1 execute xpay-db --local --file=./schema.sql` once first.
 
 ## Deploying
 
-See the step-by-step card from Claude for connecting this repo to
-Cloudflare Pages, creating the D1 database, and adding environment
-variables. In short: Git-connect the repo, build command `npm run build`,
-output directory `dist`, then add a D1 binding named `DB` and the env vars
-listed below.
+This repo deploys as a Worker (`wrangler deploy`), not `wrangler pages
+deploy` — if your Cloudflare project's Settings has the deploy command set
+to anything else, change it to `npx wrangler deploy`. Push to `main` and
+Cloudflare's connected build should pick it up automatically.
 
 ## Environment variables / bindings
 
 | Name | Where it's used | Required to... |
 |---|---|---|
-| `DB` (D1 binding) | everywhere in `functions/api/lib/db.ts` | run at all |
-| `DERIV_APP_ID` | `functions/api/lib/deriv.ts` | make "Login with Deriv" go anywhere real |
+| `DB` (D1 binding) | everywhere in `worker/lib/db.ts` | run at all — currently commented out in `wrangler.toml`, see below |
+| `ASSETS` (assets binding) | `worker/index.ts` | serve the frontend — configured automatically via the `[assets]` block |
+| `DERIV_APP_ID` | `worker/lib/deriv.ts` | make "Login with Deriv" go anywhere real |
 | `DERIV_OAUTH_REDIRECT_URI` | same | must exactly match what you register with Deriv |
-| `TOKEN_ENCRYPTION_KEY` | `functions/api/lib/crypto.ts` | encrypt stored Deriv tokens (`openssl rand -base64 32`) |
+| `TOKEN_ENCRYPTION_KEY` | `worker/lib/crypto.ts` | encrypt stored Deriv tokens (`openssl rand -base64 32`) |
 | `DERIV_PA_API_TOKEN` | not wired yet — see below | real `paymentagent_transfer`/`withdraw` calls |
 | `DARAJA_CONSUMER_KEY` / `_SECRET` / `DARAJA_SHORTCODE` / `DARAJA_PASSKEY` | not wired yet | real STK Push / B2C calls |
+
+**D1 setup:** create the database (dashboard: D1 SQL database > Create
+Database, or `wrangler d1 create xpay-db`), run `schema.sql` against it,
+then uncomment the `[[d1_databases]]` block in `wrangler.toml` and paste
+in the real `database_id` — a placeholder id there will fail the deploy
+itself, which is why it ships commented out. Cloudflare's own environment
+variables UI (Settings > Environment Variables) is for everything else in
+the table above.
 
 ## The onboarding flow
 
@@ -72,7 +91,7 @@ listed below.
 - **The per-user Deriv token is the highest-value target in this system.**
   Once linked, it can authorize `paymentagent_withdraw` — i.e., pull money
   out of that person's Deriv account. It's stored AES-GCM encrypted
-  (`functions/api/lib/crypto.ts`) rather than in plaintext, but the real
+  (`worker/lib/crypto.ts`) rather than in plaintext, but the real
   protection is requesting the narrowest OAuth scope Deriv allows (`read`
   + `payments` — never `trade` or `admin`) and keeping
   `TOKEN_ENCRYPTION_KEY` out of the repo and rotated if it's ever exposed.
@@ -84,8 +103,8 @@ listed below.
   localStorage.
 - **Deposit is written to credit Deriv only after M-Pesa confirms**, not
   on the strength of the STK push request — see the comment atop
-  `functions/api/deposit.ts` and the reference handler in
-  `functions/api/mpesa/callback.ts`. Right now deposit.ts mocks both legs
+  `worker/routes/money.ts (deposit)` and the reference handler in
+  `worker/routes/mpesa-callback.ts`. Right now deposit.ts mocks both legs
   synchronously so the demo works without a real phone; going live means
   splitting that into "request" + "confirm via webhook."
 - Every transfer keeps both a `mpesa_receipt` and a `deriv_transfer_id`
@@ -102,7 +121,7 @@ listed below.
    `DERIV_PA_API_TOKEN` — needs a verified Deriv account with a minimum
    balance (confirm the current figure with Deriv; don't assume old
    figures still hold). This is what unlocks `paymentagent_transfer` and
-   `paymentagent_withdraw` in `functions/api/lib/deriv.ts` — replace the
+   `paymentagent_withdraw` in `worker/lib/deriv.ts` — replace the
    mocked bodies with real WebSocket API calls once approved. Deriv's
    Payment Agent terms require avoiding "Deriv" in your business name
    (Xpay's fine) and put client due-diligence/AML responsibility on you.
@@ -113,8 +132,8 @@ listed below.
    specifically, submit a signed go-live request, wait for Safaricom's
    manual review (a few business days), and have Safaricom whitelist your
    production server's IP. Replace the mocked bodies in
-   `functions/api/lib/mpesa.ts` with real calls once approved.
-5. Wire `functions/api/mpesa/callback.ts` as your real STK Push callback
+   `worker/lib/mpesa.ts` with real calls once approved.
+5. Wire `worker/routes/mpesa-callback.ts` as your real STK Push callback
    URL and split `deposit.ts` into request/confirm as described above.
 
 ## Design tokens
@@ -124,4 +143,3 @@ gradient itself is meant to read as the bridge between the two systems
 (indigo toward Deriv, cyan toward M-Pesa's cash-out side). Space Grotesk
 for display type, Inter for body, JetBrains Mono for account IDs and
 monetary figures. Full token set in `tailwind.config.js`.
-

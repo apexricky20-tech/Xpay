@@ -1,5 +1,6 @@
 export interface Env {
   DB: D1Database;
+  ASSETS: Fetcher;
 
   // Deriv OAuth app — see README.md "Setting up real credentials".
   DERIV_APP_ID: string;

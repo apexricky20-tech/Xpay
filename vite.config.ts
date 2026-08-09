@@ -6,9 +6,9 @@ export default defineConfig({
   plugins: [react()],
   server: {
     proxy: {
-      // In local dev, run `npm run pages:dev` in another terminal (wrangler,
-      // port 8788 by default) to serve the /api/* Cloudflare Pages Functions.
-      "/api": "http://localhost:8788",
+      // In local dev, run `npm run worker:dev` in another terminal
+      // (wrangler, port 8787 by default) to serve the /api/* Worker routes.
+      "/api": "http://localhost:8787",
     },
   },
 });
