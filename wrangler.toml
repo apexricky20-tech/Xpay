@@ -11,7 +11,6 @@ not_found_handling = "single-page-application"
 # Uncomment once you've created the D1 database (see README) and swapped
 # in the real database_id — an invalid/placeholder id here will fail the
 # *deploy* itself, not just break at runtime, so leave this off until then.
-# [[d1_databases]]
 # binding = "DB"
 # database_name = "xpay-db"
-# database_id = "REPLACE_WITH_YOUR_D1_DATABASE_ID"
+# database_id = "d8d4c20d-1143-48f0-b71b-ffebf744def7"
