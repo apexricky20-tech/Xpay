@@ -7,9 +7,8 @@ compatibility_flags = ["nodejs_compat"]
 directory = "./dist"
 binding = "ASSETS"
 not_found_handling = "single-page-application"
-# Uncomment once you've created the D1 database (see README) and swapped
-# in the real database_id — an invalid/placeholder id here will fail the
-# *deploy* itself, not just break at runtime, so leave this off until then.
+run_worker_first = true
+
 [[d1_databases]]
 binding = "DB"
 database_name = "xpay-db"

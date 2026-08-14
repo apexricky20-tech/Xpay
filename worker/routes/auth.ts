@@ -1,7 +1,13 @@
 import type { Env } from "../lib/db";
 import { getUserById } from "../lib/db";
 import { requireUser, toSessionUser, errorJson, json } from "../lib/http";
-import { buildOAuthAuthorizeUrl, parseOAuthRedirectAccounts, authorizeOAuthRedirect } from "../lib/deriv";
+import {
+  buildAuthorizeUrl,
+  generateCodeVerifier,
+  deriveCodeChallenge,
+  exchangeCodeForToken,
+  getAccounts,
+} from "../lib/deriv";
 import { encryptToken } from "../lib/crypto";
 import {
   hashPassword,
@@ -24,34 +30,55 @@ const STEP_PATH: Record<string, string> = {
   complete: "/dashboard",
 };
 
+// Short-lived, httpOnly — these only need to survive the round trip to
+// Deriv and back, never read by client JS.
+function pkceCookie(name: string, value: string) {
+  return `${name}=${value}; Path=/; Max-Age=600; HttpOnly; Secure; SameSite=Lax`;
+}
+
 export async function derivStart(_request: Request, env: Env): Promise<Response> {
   const state = crypto.randomUUID();
-  const url = buildOAuthAuthorizeUrl(env, state);
-  return new Response(null, {
-    status: 302,
-    headers: {
-      Location: url,
-      "Set-Cookie": `xpay_oauth_state=${state}; Path=/; Max-Age=600; HttpOnly; Secure; SameSite=Lax`,
-    },
-  });
+  const codeVerifier = generateCodeVerifier();
+  const codeChallenge = await deriveCodeChallenge(codeVerifier);
+  const url = buildAuthorizeUrl(env, state, codeChallenge);
+
+  const headers = new Headers({ Location: url });
+  headers.append("Set-Cookie", pkceCookie("xpay_oauth_state", state));
+  headers.append("Set-Cookie", pkceCookie("xpay_pkce_verifier", codeVerifier));
+
+  return new Response(null, { status: 302, headers });
 }
 
 export async function derivCallback(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
 
+  if (url.searchParams.get("error")) {
+    return redirect("/login?error=oauth_failed");
+  }
+
   const cookie = request.headers.get("Cookie") ?? "";
   const stateCookie = cookie.match(/xpay_oauth_state=([^;]+)/)?.[1];
+  const verifierCookie = cookie.match(/xpay_pkce_verifier=([^;]+)/)?.[1];
   const stateParam = url.searchParams.get("state");
-  if (!stateCookie || stateCookie !== stateParam) return redirect("/login?error=oauth_failed");
+  const code = url.searchParams.get("code");
 
-  const accounts = parseOAuthRedirectAccounts(url);
-  if (accounts.length === 0) return redirect("/login?error=oauth_failed");
+  if (!stateCookie || stateCookie !== stateParam || !verifierCookie || !code) {
+    return redirect("/login?error=oauth_failed");
+  }
 
-  // TODO: prefer the real-money account over a virtual/demo one once
-  // authorizeOAuthRedirect returns account type.
-  const account = accounts[0];
-  const profile = await authorizeOAuthRedirect(account);
-  const encryptedToken = await encryptToken(env, account.token);
+  let profile;
+  let encryptedToken;
+  try {
+    const token = await exchangeCodeForToken(env, code, verifierCookie);
+    const account = await getAccounts(env, token.access_token);
+    profile = account;
+    encryptedToken = await encryptToken(env, token.access_token);
+  } catch (err) {
+    // Surfaces as a distinct error code on purpose — if Deriv's accounts
+    // response shape doesn't match what getAccounts() expects, this is
+    // where it'll show up. Check the Worker's logs for the thrown message.
+    return redirect("/login?error=oauth_exchange_failed");
+  }
 
   let user = await env.DB.prepare(`SELECT * FROM users WHERE deriv_loginid = ?`).bind(profile.loginid).first<any>();
 
@@ -71,13 +98,13 @@ export async function derivCallback(request: Request, env: Env): Promise<Respons
       .run();
   }
 
-  const token = newSessionToken();
+  const sessionToken = newSessionToken();
   await env.DB.prepare(`INSERT INTO sessions (token, user_id, expires_at) VALUES (?, ?, datetime('now', '+30 days'))`)
-    .bind(token, user.id)
+    .bind(sessionToken, user.id)
     .run();
 
   return redirect(STEP_PATH[user.onboarding_step] ?? "/complete-profile", {
-    "Set-Cookie": sessionCookieHeader(token),
+    "Set-Cookie": sessionCookieHeader(sessionToken),
   });
 }
 
